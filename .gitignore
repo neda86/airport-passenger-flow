@@ -1,0 +1,26 @@
+# data - never commit
+data/*
+!data/README.md
+*.csv
+*.parquet
+*.xlsx
+
+# python
+__pycache__/
+*.pyc
+.venv/
+venv/
+.ipynb_checkpoints/
+
+# experiment outputs
+runs/
+outputs/
+checkpoints/
+*.pt
+*.pth
+wandb/
+
+# os/editor
+.DS_Store
+.vscode/
+.idea/
