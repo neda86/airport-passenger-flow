@@ -1,4 +1,4 @@
-# Airport Passenger Flow Forecasting with GCN-LSTM
+# Airport Passenger Flow Forecasting
 
 A digital-twin framework for forecasting passenger flow at airport checkpoints.
 A **GCN-LSTM** couples graph convolutions over the airport's checkpoint/gate
