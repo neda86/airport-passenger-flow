@@ -6,8 +6,6 @@ graph (spatial structure) with LSTM temporal modeling to forecast per-node
 passenger volumes over a **3-hour horizon**, supporting proactive resource
 allocation and service optimization.
 
-> Paper in preparation (target: TRB 2027).
-
 ## Overview
 
 - **Airport graph:** a canonical 24-node directed graph — Arrival, Check-in,
