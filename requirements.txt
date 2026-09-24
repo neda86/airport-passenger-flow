@@ -1,7 +1,10 @@
-# adjust versions to your environment
+# core: simulator, feature construction, supervised models, analysis, figures
+numpy>=1.24
+pandas>=2.0
+networkx>=3.0
 torch>=2.1
-torch-geometric>=2.4
-numpy
-pandas
-scikit-learn
-matplotlib
+matplotlib>=3.7
+
+# Chronos baselines (Sections 4.3 and 5.2); peft is needed for the LoRA fine-tuning
+chronos-forecasting>=2.0
+peft>=0.10

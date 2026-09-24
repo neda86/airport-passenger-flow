@@ -1,9 +1,18 @@
-# data - never commit
+# generated data and tensors: regenerate with src/generate_mco.py and src/build_features.py
 data/*
 !data/README.md
+data_*/
 *.csv
-*.parquet
-*.xlsx
+*.npz
+
+# experiment outputs
+results/
+figures/
+figs*/
+ft_*/
+chronos2_finetune/
+*.pt
+*.pth
 
 # python
 __pycache__/
@@ -12,15 +21,7 @@ __pycache__/
 venv/
 .ipynb_checkpoints/
 
-# experiment outputs
-runs/
-outputs/
-checkpoints/
-*.pt
-*.pth
-wandb/
-
-# os/editor
+# os / editor
 .DS_Store
 .vscode/
 .idea/
