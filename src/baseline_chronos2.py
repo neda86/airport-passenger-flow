@@ -28,7 +28,7 @@ def reconstruct_series(X, feat_idx):
     return np.concatenate([head, tail], axis=0)
 
 
-def main(data_path, context_len, batch_origins=16):
+def main(data_path, context_len, batch_origins=16, no_cov=False):
     d = np.load(data_path, allow_pickle=True)
     X, Y, S = d["X"], d["Y"], d["S"]
     feats = list(d["features"])
@@ -44,7 +44,9 @@ def main(data_path, context_len, batch_origins=16):
 
     from chronos import Chronos2Pipeline
     pipe = Chronos2Pipeline.from_pretrained(
-        "amazon/chronos-2", device_map="cpu", torch_dtype=torch.float32)
+        "amazon/chronos-2",
+        device_map=("cuda" if torch.cuda.is_available() else "cpu"),
+        torch_dtype=torch.float32)
 
     preds = np.zeros((n - test_start, len(NODES), horizon), dtype=np.float32)
     batch, slots = [], []
@@ -53,8 +55,13 @@ def main(data_path, context_len, batch_origins=16):
         nonlocal batch, slots
         if not batch:
             return
-        out = pipe.predict_quantiles(batch, prediction_length=horizon,
-                                     quantile_levels=[0.5])
+        try:   # long horizons (15-min, 24 h ahead = 96 steps) need the rollout flag
+            out = pipe.predict_quantiles(batch, prediction_length=horizon,
+                                         quantile_levels=[0.5],
+                                         limit_prediction_length=False)
+        except TypeError:
+            out = pipe.predict_quantiles(batch, prediction_length=horizon,
+                                         quantile_levels=[0.5])
         # predict_quantiles returns (quantiles, mean)
         mean = out[1] if isinstance(out, tuple) else out
         for (kk, node), m in zip(slots, mean):
@@ -69,9 +76,12 @@ def main(data_path, context_len, batch_origins=16):
                         for nm in SCHED_NAMES}
             fut_cov = {nm: S[s, node, j, :]
                        for j, nm in enumerate(SCHED_NAMES)}
-            batch.append({"target": tgt_series[lo:end, node],
-                          "past_covariates": past_cov,
-                          "future_covariates": fut_cov})
+            if no_cov:
+                batch.append({"target": tgt_series[lo:end, node]})
+            else:
+                batch.append({"target": tgt_series[lo:end, node],
+                              "past_covariates": past_cov,
+                              "future_covariates": fut_cov})
             slots.append((k, node))
         if len(batch) >= batch_origins * len(NODES):
             flush()
@@ -85,14 +95,15 @@ def main(data_path, context_len, batch_origins=16):
     res = {"overall": metrics(y_true, preds),
            "checkpoints": metrics(y_true, preds, cp_mask),
            "gates": metrics(y_true, preds, ~cp_mask)}
-    print("\n== Chronos-2 (zero-shot, schedule covariates) ==")
+    print("\n== Chronos-2 (zero-shot, %s) ==" % ("no covariates" if no_cov else "schedule covariates"))
     for scope, m in res.items():
         print(f"  {scope:12s} RMSE {m['RMSE']:8.2f}  MAE {m['MAE']:7.2f}  "
               f"R2 {m['R2']:6.3f}  MAPE(nz) {m['MAPE_nonzero']:7.1f}%")
 
-    out = data_path.replace(".npz", "_chronos2.json")
+    suffix = "_chronos2_nocov" if no_cov else "_chronos2"
+    out = data_path.replace(".npz", suffix + ".json")
     json.dump(res, open(out, "w"), indent=2)
-    np.savez_compressed(data_path.replace(".npz", "_chronos2_preds.npz"),
+    np.savez_compressed(data_path.replace(".npz", suffix + "_preds.npz"),
                         y_true=y_true, pred_Chronos2=preds)
     print(f"saved -> {out}")
 
@@ -101,5 +112,6 @@ if __name__ == "__main__":
     ap = argparse.ArgumentParser()
     ap.add_argument("--data", required=True)
     ap.add_argument("--context", type=int, default=512)
+    ap.add_argument("--no-cov", action="store_true", help="univariate zero-shot (isolates fine-tuning vs covariates)")
     args = ap.parse_args()
-    main(args.data, args.context)
+    main(args.data, args.context, no_cov=args.no_cov)

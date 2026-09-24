@@ -30,81 +30,130 @@ import argparse
 import numpy as np
 import pandas as pd
 
-from airport_graph import NODES, NODE_INDEX, NUM_NODES, CHECKPOINTS
+from airport_graph import (NODES, NODE_INDEX, NUM_NODES, CHECKPOINTS,
+                           SCHED_DEP_NODES, GATE_HUB, node_flow_events)
 
 FEATURES = ["Flow_In", "Flow_Out", "hour_sin", "hour_cos", "dow_sin", "dow_cos", "workday"]
 SCHED_FEATURES = ["sched_board", "sched_dep"]
 TARGET = "Flow_In"
 
 
-def node_flow_events(df: pd.DataFrame) -> pd.DataFrame:
-    """One row per (node, flow-type) event, timestamped."""
-    for col in ["Arrival Time", "Check-in Start", "Check-in End",
-                "Security Queue Start", "Security Queue End",
-                "Boarding Start", "Boarding End", "Boarding Time"]:
-        df[col] = pd.to_datetime(df[col], errors="coerce")
-
-    recs = []
-    def add(node, start_col, end_col):
-        sub = df[[start_col, end_col]].dropna()
-        recs.append(pd.DataFrame({"Node": node, "Time": sub[start_col], "Type": "in"}))
-        recs.append(pd.DataFrame({"Node": node, "Time": sub[end_col], "Type": "out"}))
-
-    add("Arrival", "Arrival Time", "Check-in Start")
-    add("Check-in", "Check-in Start", "Check-in End")
-    add("Security", "Security Queue Start", "Security Queue End")
-    add("Boarding", "Security Queue End", "Boarding Time")
-
-    gate = df[["Boarding Time", "Gate", "Departure"]] if "Departure" in df else df[["Boarding Time", "Gate"]]
-    gate = gate.dropna(subset=["Boarding Time"]).copy()
-    gate["Node"] = "Gate " + gate["Gate"].astype(int).astype(str)
-    recs.append(pd.DataFrame({"Node": gate["Node"], "Time": gate["Boarding Time"], "Type": "in"}))
-
-    return pd.concat(recs, ignore_index=True)
+PUBLISHED_COLS = {"Sched Departure": "Departure", "Sched Boarding Start": "Boarding Start",
+                  "Sched Boarding End": "Boarding End", "Sched Gate": "Gate"}
 
 
-def schedule_features(flights_csv: str, bins: pd.DatetimeIndex, freq: str) -> np.ndarray:
-    """(NUM_NODES, T, 2) known-future schedule covariates on the bin grid."""
-    fl = pd.read_csv(flights_csv, parse_dates=["Boarding Start", "Boarding End", "Departure"])
+EXPECTED_LOAD_FACTOR = 17.0 / (17.0 + 3.5)     # mean of generate_mco's Beta(17, 3.5)
+EXPECTED_PAX_LINEAR = 100.0                     # Poisson mean of generate_data.py
+
+
+def _with_columns(fl: pd.DataFrame, use: dict, pax: str = "realized") -> pd.DataFrame:
+    """Return a copy of the flight table in which the columns named in `use`
+    (published -> realized name) replace the realized ones.
+
+    pax='realized': 'Num Passengers' is the number who actually travelled
+                    (seats x the load factor drawn by the simulator).
+    pax='expected': what an operator knows in advance: seats x the mean load
+                    factor (MCO data) or the mean flight size (linear data),
+                    with a weekend uplift where the generator has one. The exact
+                    load of each flight is NOT revealed to the model."""
+    out = fl.drop(columns=list(use.values())).rename(columns=use).copy()
+    for c in ["Boarding Start", "Boarding End", "Departure"]:
+        out[c] = pd.to_datetime(out[c])
+    if pax == "expected":
+        if "Seats" in out.columns:
+            out["Num Passengers"] = out["Seats"].astype(float) * EXPECTED_LOAD_FACTOR
+        else:   # linear generator: Poisson(100), x1.15-1.20 at weekends
+            wk = out["Departure"].dt.weekday >= 5
+            out["Num Passengers"] = np.where(wk, EXPECTED_PAX_LINEAR * 1.175, EXPECTED_PAX_LINEAR)
+    elif pax != "realized":
+        raise ValueError(f"pax must be realized|expected, got {pax!r}")
+    return out
+
+
+def _accumulate(fl, sched, bins, step, t0, T, cp_idx,
+                gate_board=True, hub_board=True, dep=True):
+    """Add one flight table's contributions to sched (NUM_NODES, T, 2)."""
+    for _, f in fl.iterrows():
+        gate_name = f"Gate {int(f['Gate'])}"
+        gate_node = NODE_INDEX[gate_name]
+        board_node = NODE_INDEX[GATE_HUB[gate_name]]   # Boarding (linear) / Airside k (mco)
+        pax = float(f["Num Passengers"])
+
+        # sched_board: pax spread over the boarding window, proportional to overlap.
+        if gate_board or hub_board:
+            b0, b1 = f["Boarding Start"], f["Boarding End"]
+            dur = (b1 - b0).total_seconds()
+            i0 = max(0, int((b0 - t0) / step))
+            i1 = min(T - 1, int((b1 - t0) / step))
+            for i in range(i0, i1 + 1):
+                lo, hi = bins[i], bins[i] + step
+                ov = (min(hi, b1) - max(lo, b0)).total_seconds()
+                if ov > 0 and dur > 0:
+                    w = pax * ov / dur
+                    if gate_board:
+                        sched[gate_node, i, 0] += w
+                    if hub_board:
+                        sched[board_node, i, 0] += w
+
+        # sched_dep: landside pressure — flight contributes to bins 1-3.5h
+        # before its departure (the arrival window of its passengers).
+        if dep:
+            d0, d1 = f["Departure"] - pd.Timedelta(hours=3.5), f["Departure"] - pd.Timedelta(hours=1.0)
+            j0 = max(0, int((d0 - t0) / step))
+            j1 = min(T - 1, int((d1 - t0) / step))
+            if j1 >= j0:
+                for n in cp_idx:
+                    sched[n, j0:j1 + 1, 1] += pax
+                sched[gate_node, j0:j1 + 1, 1] += pax
+
+
+def schedule_features(flights_csv: str, bins: pd.DatetimeIndex, freq: str,
+                      schedule: str = "realized", pax: str = "realized") -> np.ndarray:
+    """(NUM_NODES, T, 2) known-future schedule covariates on the bin grid.
+
+    schedule='realized'  -> covariates from the times/gates that actually happened
+                            (equivalent to a perfect schedule; the default).
+    schedule='published' -> covariates from the PUBLISHED schedule columns
+                            (Sched Departure / Sched Boarding Start|End / Sched Gate),
+                            which is what an operator knows in advance. With
+                            generate_mco.py --delay-frac / --gate-change-frac the
+                            two differ, so this measures robustness to schedule
+                            imperfection. Targets always come from realized flows.
+    schedule='mixed'     -> each covariate from the schedule that governs the
+                            physical process it describes: passengers show up
+                            (landside pressure, airside/hub arrivals) relative to
+                            the PUBLISHED departure, whereas boarding at a GATE
+                            follows the REALIZED gate and time. = the operational
+                            upper bound if delays/gate changes are announced in time.
+    """
+    fl = pd.read_csv(flights_csv)
+    if schedule in ("published", "mixed"):
+        missing = [c for c in PUBLISHED_COLS if c not in fl.columns]
+        if missing:
+            raise ValueError(f"--schedule {schedule} needs columns {missing} in {flights_csv}")
+    elif schedule != "realized":
+        raise ValueError(f"schedule must be realized|published|mixed, got {schedule!r}")
     step = pd.Timedelta(freq)
     t0 = bins[0]
     T = len(bins)
     sched = np.zeros((NUM_NODES, T, 2), dtype=np.float32)
-    board_node = NODE_INDEX["Boarding"]
-    cp_idx = [NODE_INDEX[c] for c in CHECKPOINTS if c != "Boarding"]
+    cp_idx = [NODE_INDEX[c] for c in SCHED_DEP_NODES]
+    args = (sched, bins, step, t0, T, cp_idx)
 
-    for _, f in fl.iterrows():
-        gate_node = NODE_INDEX[f"Gate {int(f['Gate'])}"]
-        pax = float(f["Num Passengers"])
-
-        # sched_board: pax spread over the boarding window, proportional to overlap.
-        b0, b1 = f["Boarding Start"], f["Boarding End"]
-        dur = (b1 - b0).total_seconds()
-        i0 = max(0, int((b0 - t0) / step))
-        i1 = min(T - 1, int((b1 - t0) / step))
-        for i in range(i0, i1 + 1):
-            lo, hi = bins[i], bins[i] + step
-            ov = (min(hi, b1) - max(lo, b0)).total_seconds()
-            if ov > 0 and dur > 0:
-                w = pax * ov / dur
-                sched[gate_node, i, 0] += w
-                sched[board_node, i, 0] += w
-
-        # sched_dep: landside pressure — flight contributes to bins 1-3.5h
-        # before its departure (the arrival window of its passengers).
-        d0, d1 = f["Departure"] - pd.Timedelta(hours=3.5), f["Departure"] - pd.Timedelta(hours=1.0)
-        j0 = max(0, int((d0 - t0) / step))
-        j1 = min(T - 1, int((d1 - t0) / step))
-        if j1 >= j0:
-            for n in cp_idx:
-                sched[n, j0:j1 + 1, 1] += pax
-            sched[gate_node, j0:j1 + 1, 1] += pax
+    if schedule == "realized":
+        _accumulate(_with_columns(fl, {}, pax), *args)
+    elif schedule == "published":
+        _accumulate(_with_columns(fl, PUBLISHED_COLS, pax), *args)
+    else:  # mixed
+        _accumulate(_with_columns(fl, PUBLISHED_COLS, pax), *args, gate_board=False, hub_board=True, dep=True)
+        _accumulate(_with_columns(fl, {}, pax), *args, gate_board=True, hub_board=False, dep=False)
 
     return sched
 
 
 def build(passengers_csv: str, freq: str, in_seq: int, tar_seq: int,
-          flights_csv: str | None = None):
+          flights_csv: str | None = None, schedule: str = "realized",
+          pax: str = "realized"):
     df = pd.read_csv(passengers_csv)
     events = node_flow_events(df)
     events["Bin"] = events["Time"].dt.floor(freq)
@@ -140,7 +189,7 @@ def build(passengers_csv: str, freq: str, in_seq: int, tar_seq: int,
 
     sched = None
     if flights_csv is not None:
-        sched = schedule_features(flights_csv, bins, freq)
+        sched = schedule_features(flights_csv, bins, freq, schedule, pax)
         feat = np.concatenate([feat, sched], axis=2)  # history side
 
     # Sliding windows.
@@ -170,11 +219,21 @@ if __name__ == "__main__":
                     help="forecast horizon in steps")
     ap.add_argument("--flights", default=None,
                     help="flights.csv for known-future schedule covariates")
+    ap.add_argument("--schedule", default="realized",
+                    choices=["realized", "published", "mixed"],
+                    help="which flight-schedule columns feed the covariates: "
+                         "published = what the operator knows in advance; "
+                         "realized = what actually happened; mixed = published "
+                         "departure for landside pressure, realized boarding/gate")
+    ap.add_argument("--pax", default="realized", choices=["realized", "expected"],
+                    help="passengers per flight in the covariates: realized count "
+                         "(simulator draw) or expected = seats x mean load factor "
+                         "(what an operator knows in advance)")
     ap.add_argument("--out", default=None)
     args = ap.parse_args()
 
     X, Y, S, stamps = build(args.passengers, args.freq, args.in_seq,
-                            args.tar_seq, args.flights)
+                            args.tar_seq, args.flights, args.schedule, args.pax)
     out = args.out or f"tensors_{args.freq}.npz"
     feats = FEATURES + (SCHED_FEATURES if S is not None else [])
     arrays = dict(X=X, Y=Y,

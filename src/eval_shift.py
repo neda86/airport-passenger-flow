@@ -82,7 +82,9 @@ def main(args):
     te = apply_stats(stats, *te_raw)
     sh = apply_stats(stats, Xs, Ss, Ys)          # base-train stats, unchanged
     train_dl, val_dl, test_dl = loaders([tr, va, te])
-    (shift_dl,) = loaders([sh])[:1]
+    from torch.utils.data import TensorDataset, DataLoader
+    shift_dl = DataLoader(TensorDataset(*[torch.tensor(a) for a in sh]), batch_size=32,
+                          shuffle=False, drop_last=False)   # loaders() would shuffle and drop the last batch
 
     A = adjacency()
     results = {}

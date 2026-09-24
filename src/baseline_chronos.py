@@ -39,7 +39,9 @@ def main(data_path, context_len, batch_origins=64):
 
     from chronos import BaseChronosPipeline
     pipe = BaseChronosPipeline.from_pretrained(
-        "amazon/chronos-bolt-small", device_map="cpu", torch_dtype=torch.float32)
+        "amazon/chronos-bolt-small",
+        device_map=("cuda" if torch.cuda.is_available() else "cpu"),
+        torch_dtype=torch.float32)
 
     origins = range(test_start, n)
     preds = np.zeros((n - test_start, len(NODES), horizon), dtype=np.float32)
@@ -52,8 +54,11 @@ def main(data_path, context_len, batch_origins=64):
             batch.append(torch.tensor(ctx[:, node]))
             slots.append((k, node))
         if len(batch) >= batch_origins * len(NODES) or s == n - 1:
+            # limit_prediction_length=False lets Chronos-Bolt roll out beyond its
+            # native 64-step window (needed for the 15-min, 24-h-ahead sweep).
             q, mean = pipe.predict_quantiles(batch, prediction_length=horizon,
-                                             quantile_levels=[0.5])
+                                             quantile_levels=[0.5],
+                                             limit_prediction_length=False)
             for (kk, node), m in zip(slots, mean):
                 preds[kk, node] = m.numpy()
             batch, slots = [], []

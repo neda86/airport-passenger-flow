@@ -192,9 +192,26 @@ class AdaptiveGraphConv(nn.Module):
         return torch.relu(out)
 
 
+class ShuffledGraphConvolution(GraphConvolution):
+    """Diagnostic: the same GCN layer but with the node labels of the adjacency
+    randomly permuted (same number of edges, same degree distribution, WRONG
+    topology). If it performs like the true graph, the layer is not extracting
+    layout-specific information."""
+    def __init__(self, in_features, out_features, A, seed=0):
+        perm = np.random.default_rng(seed).permutation(A.shape[0])
+        super().__init__(in_features, out_features, np.asarray(A)[perm][:, perm])
+
+
 SPATIAL_LAYERS = {"none": IdentitySpatial, "gcn": GraphConvolution,
                   "gat": GraphAttention, "adaptive": AdaptiveGraphConv,
-                  "cheb": ChebConv, "diffusion": DiffusionConv}
+                  "cheb": ChebConv, "diffusion": DiffusionConv,
+                  "gcn_shuffled": ShuffledGraphConvolution,
+                  # 'isolated' is handled inside STModel: each node is encoded on
+                  # its own (shared weights + node-identity embedding), so NO
+                  # cross-node information reaches the forecast at all. 'none'
+                  # is NOT isolated: it flattens all nodes into one vector, i.e. a
+                  # dense, fully learned node-mixing layer.
+                  "isolated": IdentitySpatial}
 
 
 # ---------------------------------------------------------------- temporal
@@ -237,6 +254,56 @@ class TransformerEnc(nn.Module):
         return self.enc(h)[:, -1]        # (B, hidden)
 
 
+class TDNEnc(nn.Module):
+    """Temporal-Dynamics-Network-style encoder (Tito Cruz, Ghafouri et al. 2026),
+    adapted from serial-MRI timepoints to flow-history steps:
+      * time-descriptor positional encoding  psi([t/(T-1), log(1+t)])  (their Eq. 3-4)
+      * a learnable QUERY token prepended to the sequence; its output is the
+        representation (their Eq. 5) -- instead of last-token readout
+      * an optional CONTEXT token built from the known-future schedule
+        covariates (their clinical token -> our schedule token)
+    """
+    def __init__(self, in_size, hidden, ctx_dim=0, nhead=4, layers=2,
+                 use_query=True, use_time=True, max_len=128):
+        super().__init__()
+        self.proj = nn.Linear(in_size, hidden)
+        self.use_query, self.use_time = use_query, use_time
+        self.time = nn.Linear(2, hidden)                       # time-descriptor encoding
+        self.pos = nn.Parameter(torch.zeros(1, max_len, hidden))  # ablation: learned positions
+        self.query = nn.Parameter(torch.zeros(1, 1, hidden))
+        self.ctx = nn.Linear(ctx_dim, hidden) if ctx_dim else None
+        enc = nn.TransformerEncoderLayer(hidden, nhead, hidden * 2,
+                                         dropout=0.1, batch_first=True)
+        self.enc = nn.TransformerEncoder(enc, layers)
+
+    def forward(self, seq, ctx=None):    # seq (B, T, C); ctx (B, ctx_dim)
+        B, T, _ = seq.shape
+        if self.use_time:
+            t = torch.arange(T, device=seq.device, dtype=seq.dtype)
+            rho = torch.stack([t / max(T - 1, 1), torch.log1p(t)], dim=-1)   # (T, 2)
+            h = self.proj(seq) + self.time(rho).unsqueeze(0)
+        else:
+            h = self.proj(seq) + self.pos[:, :T]
+        toks = [self.query.expand(B, -1, -1), h] if self.use_query else [h]
+        if self.ctx is not None and ctx is not None:
+            toks.append(self.ctx(ctx).unsqueeze(1))
+        out = self.enc(torch.cat(toks, dim=1))
+        return out[:, 0] if self.use_query else out[:, T - 1]   # query token, else last step token
+
+
+class PriorResidual(nn.Module):
+    """TDN-style fusion (their Eq. 7-8): y = prior(schedule) + alpha * residual.
+    The prior is an affine map of the scheduled-boarding covariate (a learned
+    stand-in for their logistic-regression prior); alpha is a learned scalar."""
+    def __init__(self):
+        super().__init__()
+        self.w = nn.Parameter(torch.zeros(1)); self.b = nn.Parameter(torch.zeros(1))
+        self.alpha = nn.Parameter(torch.ones(1))
+
+    def forward(self, residual, s):      # s (B, N, k, H): channel 0 = sched_board
+        return self.w * s[:, :, 0, :] + self.b + self.alpha * residual
+
+
 class RNNEnc(nn.Module):
     def __init__(self, in_size, hidden, kind="lstm"):
         super().__init__()
@@ -255,6 +322,8 @@ def make_temporal(kind, in_size, hidden):
         return TCN(in_size, hidden)
     if kind == "transformer":
         return TransformerEnc(in_size, hidden)
+    if kind == "tdn":
+        return TDNEnc(in_size, hidden)      # ctx wired in STModel when sched_k>0
     raise ValueError(kind)
 
 
@@ -272,29 +341,92 @@ class ScheduleHead(nn.Module):
         return self.net(s.reshape(B, N, k * H))  # (B, N, H)
 
 
+class SchedOnlyModel(nn.Module):
+    """Control model: NO flow history at all. The forecast is a per-node MLP of the
+    known-future schedule covariates plus a learned per-node bias. Measures how much
+    of the +Sched models' skill is the information itself versus learned dynamics."""
+    def __init__(self, num_nodes, horizon, sched_k, hidden=64):
+        super().__init__()
+        self.horizon = horizon
+        self.head = ScheduleHead(sched_k, horizon, hidden)
+        self.bias = nn.Parameter(torch.zeros(num_nodes, horizon))
+
+    def forward(self, x, s=None):
+        return self.head(s) + self.bias.unsqueeze(0)
+
+
 class STModel(nn.Module):
     """Any spatial layer x any temporal encoder + optional schedule head.
     spatial: none | gcn | gat | adaptive | cheb | diffusion
-    temporal: lstm | gru | tcn | transformer
+    temporal: lstm | gru | tcn | transformer | tdn
     GCN-LSTM = STModel('gcn', 'lstm'); the old PlainLSTM = STModel('none', 'lstm')."""
     def __init__(self, A, num_nodes, in_features, horizon,
                  gcn_hidden=16, t_hidden=128, dropout=0.2, sched_k=0,
                  spatial="gcn", temporal="lstm"):
         super().__init__()
         self.num_nodes, self.horizon = num_nodes, horizon
+        self.isolated = spatial == "isolated"
         self.gcn = SPATIAL_LAYERS[spatial](in_features, gcn_hidden, A)
         self.drop = nn.Dropout(dropout)
-        self.temporal = make_temporal(temporal, num_nodes * gcn_hidden, t_hidden)
-        self.fc = nn.Linear(t_hidden, num_nodes * horizon)
-        self.sched = ScheduleHead(sched_k, horizon) if sched_k else None
+        # TDN ablation variants: tdn | tdn_noq (no query token, last-step readout)
+        #   | tdn_nopsi (learned positions instead of time descriptors) | tdn_noctx (no
+        #   context token) | tdn_noprior (no affine schedule prior) | tdn_head (schedule
+        #   through the per-node residual head instead of token + prior) | tdn_both
+        #   (token + prior AND the per-node residual head)
+        self.is_tdn = temporal.startswith("tdn")
+        # Encoder-isolation variants: lstm_ctx = LSTM with the
+        #   TDN-style schedule pathway (context vector added to the sequence
+        #   representation + affine prior, no residual head); lstm_ctxboth = the
+        #   same plus the per-node residual head (the LSTM analogue of tdn_both).
+        base = temporal.split("_")[0]
+        flags = set(temporal.split("_")[1:])
+        self.lstm_ctx = base == "lstm" and "ctx" in flags or base == "lstm" and "ctxboth" in flags
+        use_query, use_time = "noq" not in flags, "nopsi" not in flags
+        if self.lstm_ctx:
+            self.use_ctx = bool(sched_k)
+            use_prior = bool(sched_k)
+            use_head = bool(sched_k) and "ctxboth" in flags
+            temporal = "lstm"
+        else:
+            self.use_ctx = bool(sched_k) and self.is_tdn and not ({"noctx", "head"} & flags)
+            use_prior = bool(sched_k) and self.is_tdn and not ({"noprior", "head"} & flags)
+            use_head = bool(sched_k) and (not self.is_tdn or bool({"head", "both"} & flags))
+        if self.isolated:
+            # per-node encoder: node-identity embedding lets the shared weights
+            # specialise per node without seeing any other node
+            self.node_emb = nn.Parameter(torch.randn(num_nodes, 8) * 0.1)
+            enc_in, ctx_dim, fc_out = gcn_hidden + 8, sched_k * horizon, horizon
+        else:
+            enc_in, ctx_dim, fc_out = num_nodes * gcn_hidden, num_nodes * sched_k * horizon, num_nodes * horizon
+        if self.is_tdn:
+            self.temporal = TDNEnc(enc_in, t_hidden, ctx_dim=ctx_dim if self.use_ctx else 0,
+                                   use_query=use_query, use_time=use_time)
+        else:
+            self.temporal = make_temporal(temporal, enc_in, t_hidden)
+        self.ctx_proj = nn.Linear(ctx_dim, t_hidden) if (self.lstm_ctx and self.use_ctx) else None
+        self.fc = nn.Linear(t_hidden, fc_out)
+        # schedule enters a TDN model as a context token + prior; others use the residual head
+        self.sched = ScheduleHead(sched_k, horizon) if use_head else None
+        self.prior = PriorResidual() if use_prior else None
 
     def forward(self, x, s=None):        # x: (B, N, F, T)
         B, N, F, T = x.shape
-        seq = [self.drop(self.gcn(x[..., t])).reshape(B, -1) for t in range(T)]
-        out = self.temporal(torch.stack(seq, dim=1))
+        h = torch.stack([self.drop(self.gcn(x[..., t])) for t in range(T)], dim=1)  # (B, T, N, hid)
+        if self.isolated:
+            emb = self.node_emb.unsqueeze(0).unsqueeze(0).expand(B, T, -1, -1)
+            seq = torch.cat([h, emb], dim=-1).permute(0, 2, 1, 3).reshape(B * N, T, -1)
+            ctx = s.reshape(B * N, -1) if (self.use_ctx and s is not None) else None
+        else:
+            seq = h.reshape(B, T, -1)
+            ctx = s.reshape(B, -1) if (self.use_ctx and s is not None) else None
+        out = self.temporal(seq, ctx) if self.is_tdn else self.temporal(seq)
+        if self.ctx_proj is not None and ctx is not None:
+            out = out + self.ctx_proj(ctx)
         out = self.fc(self.drop(out)).view(B, N, self.horizon)
         if self.sched is not None:
             out = out + self.sched(s)
+        if self.prior is not None:
+            out = self.prior(out, s)
         return out
 
 
@@ -398,15 +530,20 @@ def main(data_path, epochs, seed, only_models=None,
     results, preds = {}, {}
 
     NAME = {"none": "", "gcn": "GCN-", "gat": "GAT-", "adaptive": "AdpGCN-",
-            "cheb": "Cheb-", "diffusion": "Diff-"}
+            "cheb": "Cheb-", "diffusion": "Diff-",
+            "isolated": "Iso-", "gcn_shuffled": "ShufGCN-"}
     runs = []
+    if "schedonly" in temporals and sched_k:      # history-free control, once
+        runs.append(("SchedOnly", lambda k: SchedOnlyModel(len(NODES), horizon, k), sched_k))
+    temporals = [t for t in temporals if t != "schedonly"]
     for sp in spatials:
         for tp in temporals:
             name = f"{NAME[sp]}{tp.upper()}"
             ctor = (lambda sp=sp, tp=tp: lambda k: STModel(
                 A, len(NODES), n_feat, horizon, sched_k=k,
                 spatial=sp, temporal=tp))()
-            runs.append((name, ctor, 0))
+            if not (tp.startswith("tdn_") or tp.startswith("lstm_")):   # ablation variants: +Sched only
+                runs.append((name, ctor, 0))
             if sched_k:
                 runs.append((f"{name}+Sched", ctor, sched_k))
     if only_models:
@@ -447,9 +584,13 @@ if __name__ == "__main__":
     ap.add_argument("--models", default=None,
                     help="comma-separated subset, e.g. 'GCN-LSTM+Sched,GAT-LSTM+Sched'")
     ap.add_argument("--spatials", default="gcn,none",
-                    help="comma list from: none,gcn,gat,adaptive,cheb,diffusion")
+                    help="comma list from: none,gcn,gat,adaptive,cheb,diffusion,"
+                         "isolated (per-node, no cross-node info),"
+                         "gcn_shuffled (GCN with a permuted adjacency)")
     ap.add_argument("--temporals", default="lstm",
-                    help="comma list from: lstm,gru,tcn,transformer")
+                    help="comma list from: lstm,gru,tcn,transformer,tdn,"
+                         "schedonly (control: schedule covariates, no history),"
+                         "tdn_noq,tdn_nopsi,tdn_noctx,tdn_noprior,tdn_head,tdn_both (TDN ablations)")
     args = ap.parse_args()
     main(args.data, args.epochs, args.seed,
          only_models=set(args.models.split(",")) if args.models else None,
