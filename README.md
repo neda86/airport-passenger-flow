@@ -81,7 +81,7 @@ python build_features.py ... --freq 1h --in-seq 24 --tar-seq 6 --out ../data/ten
 
 Two options decide what the covariates may know, which is the information question of the paper:
 
-* `--pax realized|expected`. `realized` uses the passenger count the simulator drew for each flight; `expected` uses seats times the mean load factor, which is what an operator has before departure. The main table uses realized loads, Section 5.5 repeats the headline models with expected loads.
+* `--pax realized|expected`. `realized` uses the passenger count the simulator drew for each flight; `expected` uses seat capacity multiplied by the mean load factor as a pre-departure proxy for passenger demand. The main table uses the simulated realized passenger counts (realized loads), Section 5.5 repeats the headline models with expected loads.
 * `--schedule realized|published|mixed`. On the disrupted data, `published` builds the covariates from the schedule the operator sees in advance, `realized` from what actually happened (the oracle rows), and `mixed` uses the published schedule for the landside covariate and the realized gate and boarding time for the gate covariate.
 
 ### 3. Train the supervised models
