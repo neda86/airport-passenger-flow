@@ -1,20 +1,33 @@
-"""Train & evaluate GCN-LSTM, LSTM, and Moving-Average on the flow tensors.
+"""Train and evaluate the model family of the paper on the flow tensors.
 
-Fixes vs. the original notebooks (05. GCNLSTM / airport__gcn_lstm.py):
-  1. Adjacency: the physically-normalized A_norm from airport_graph (matching
-     Eq. 3-4 of the paper), in the SAME node order as the tensors. The old code
-     silently replaced it with a cosine-similarity matrix.
-  2. Normalization stats (target min-max, feature z-score) fit on TRAIN ONLY.
-  3. Chronological 70/15/15 split (the old 90/5/5 test set was ~430 samples).
-  4. Early stopping on validation loss; best checkpoint restored. Fresh model
-     per run — no cross-dataset weight reuse.
-  5. Dropout applied where it works (after GCN + after LSTM output); the old
-     nn.LSTM(dropout=..., num_layers=1) was a silent no-op.
-  6. Metrics reported overall AND per node type (checkpoints vs gates),
-     computed in the original passenger-count scale.
+Every supervised model is one spatial operator followed by one temporal
+encoder, with an optional schedule branch (STModel below). The script trains
+every combination requested on the command line, plus the moving-average
+baseline and, if asked, the schedule-only control, and writes the test metrics
+and predictions next to the input tensors.
 
-Usage: train_models.py --data tensors_15min.npz [--epochs 150] [--seed 42]
-Saves metrics JSON and per-model test predictions (for plotting/analysis).
+Spatial operators (--spatials): none (per-node linear map; the node embeddings
+  are still concatenated before the encoder, so cross-node mixing is learned),
+  gcn, gat, adaptive, cheb (Chebyshev, order 3), diffusion (DCRNN-style,
+  direction-aware), isolated (each node encoded on its own, no cross-node
+  information) and gcn_shuffled (GCN with a permuted adjacency).
+Temporal encoders (--temporals): lstm, gru, tcn, transformer, tdn, the TDN
+  ablations tdn_noq, tdn_nopsi, tdn_noctx, tdn_noprior, tdn_head, tdn_both,
+  tdn_noq_both, the encoder-isolation variants lstm_ctx and lstm_ctxboth (an
+  LSTM given the TDN context vector and affine prior, without and with the
+  per-node head), and schedonly (schedule covariates, no flow history).
+Schedule: when the tensors contain S, each model is also trained as
+  "<name>+Sched" with the known-future covariates; ablation variants are
+  trained with the schedule only.
+
+Protocol: chronological 70/15/15 split; target min-max and feature z-score
+statistics fit on the training split only; Adam, MSE loss, early stopping on
+validation loss with the best checkpoint restored; metrics reported overall
+and per node type in passenger units.
+
+Usage: train_models.py --data tensors_1h.npz [--spatials none,gcn]
+                       [--temporals lstm,tdn] [--models NAME,...] [--seed 42]
+Writes <data>_results[_seedN].json and <data>_preds[_seedN].npz.
 """
 import argparse
 import json
@@ -359,7 +372,7 @@ class STModel(nn.Module):
     """Any spatial layer x any temporal encoder + optional schedule head.
     spatial: none | gcn | gat | adaptive | cheb | diffusion
     temporal: lstm | gru | tcn | transformer | tdn
-    GCN-LSTM = STModel('gcn', 'lstm'); the old PlainLSTM = STModel('none', 'lstm')."""
+    GCN-LSTM = STModel('gcn', 'lstm'); LSTM without a graph = STModel('none', 'lstm')."""
     def __init__(self, A, num_nodes, in_features, horizon,
                  gcn_hidden=16, t_hidden=128, dropout=0.2, sched_k=0,
                  spatial="gcn", temporal="lstm"):
@@ -590,7 +603,9 @@ if __name__ == "__main__":
     ap.add_argument("--temporals", default="lstm",
                     help="comma list from: lstm,gru,tcn,transformer,tdn,"
                          "schedonly (control: schedule covariates, no history),"
-                         "tdn_noq,tdn_nopsi,tdn_noctx,tdn_noprior,tdn_head,tdn_both (TDN ablations)")
+                         "tdn_noq,tdn_nopsi,tdn_noctx,tdn_noprior,tdn_head,tdn_both,"
+                         "tdn_noq_both (TDN ablations),"
+                         "lstm_ctx,lstm_ctxboth (LSTM with the TDN schedule pathway)")
     args = ap.parse_args()
     main(args.data, args.epochs, args.seed,
          only_models=set(args.models.split(",")) if args.models else None,

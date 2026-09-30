@@ -1,16 +1,15 @@
 """Feature engineering: passenger events -> (samples, nodes, features, seq) tensors.
 
-Fixes vs. the original notebooks (03. Feature Engineering / Airport_FE_p85_LSTM):
-  1. Node axis uses the canonical order from airport_graph.NODES — identical to
-     the adjacency matrix rows. (Old code: Node_ID from first-appearance order,
-     unrelated to the adjacency's declared order => GCN mixed wrong neighbors.)
-  2. NO normalization here. Scaling params are fit on the TRAIN SPLIT ONLY
-     inside train_models.py. (Old code z-scored then min-maxed the full dataset
-     before splitting => leakage, and double-scaled the inputs.)
+Conventions:
+  1. The node axis follows the canonical order in airport_graph.NODES, which
+     is also the row order of the adjacency matrix, so graph operators mix
+     the right neighbours.
+  2. Nothing is normalized here. Scaling parameters are fit on the training
+     split only, inside train_models.py.
   3. The time grid is a complete regular grid over the simulation span, so
      sliding windows are always contiguous in real time.
-  4. Peak-hour/peak-day flags removed: they were computed from full-dataset
-     statistics (leakage). Cyclical time encodings carry the same signal.
+  4. Calendar features are cyclical encodings of hour and day of week plus a
+     workday flag; no feature is computed from full-dataset statistics.
 
 Schedule conditioning: if --flights is given, two KNOWN-FUTURE covariates are
 built from the published flight schedule (both are known hours in advance in
@@ -22,7 +21,9 @@ real operations, so using them over the forecast horizon is NOT leakage):
 They are appended to the history features AND exported as a future tensor
 S (samples, nodes, 2, tar_seq) aligned with the forecast horizon.
 
-Usage: build_features.py --freq 15min|1h [--flights flights.csv]
+Usage: build_features.py --freq 15min|1h --in-seq 12 --tar-seq 12
+                         [--flights flights.csv --schedule realized|published|mixed
+                          --pax realized|expected] [--out tensors.npz]
 Output: tensors_<freq>.npz with X (samples, nodes, features, in_seq),
         Y (samples, nodes, tar_seq), S (if flights given), timestamps.
 """
