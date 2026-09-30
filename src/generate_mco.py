@@ -1,8 +1,9 @@
-"""MCO-inspired airport departure simulator with realistic distributions.
+"""MCO-inspired synthetic airport terminal simulator.
 
 Run with the matching layout:  AIRPORT_LAYOUT=mco python generate_mco.py --out data
 
-What is more realistic than generate_data.py (the linear-layout generator):
+Main modelling choices (generate_data.py, the linear-layout generator, is
+simpler on every point):
 
   SCHEDULE   Bank-structured departures (waves), not a smooth Poisson rate;
              day-of-week multipliers (weekends busier, tourism airport) and a
@@ -12,15 +13,15 @@ What is more realistic than generate_data.py (the linear-layout generator):
              instead of a constant 100 passengers per flight.
   SHOW-UP    Log-normal lead time before departure (median ~100 min domestic,
              ~150 min international, long early tail), instead of a uniform
-             window. Show-up is relative to the PUBLISHED departure.
+             window. Show-up is relative to the published departure.
   PASSENGERS Heterogeneous: checked bag or not (bag-less skip check-in),
              kiosk vs counter, PreCheck vs standard security lanes.
   LAYOUT     Two parallel security checkpoints (West/East) chosen by airside
              affinity, APM transit to four airside concourses, 24 gates.
   QUEUES     Every service point is a FCFS multi-server queue with log-normal
              service times, so waits respond nonlinearly to load.
-  DISRUPTION Optional --delay-frac / --gate-change-frac produce a REALIZED
-             schedule that differs from the PUBLISHED one (both are written
+  DISRUPTION Optional --delay-frac / --gate-change-frac produce a realized
+             schedule that differs from the published one (both are written
              to flights.csv), for schedule-imperfection experiments. Defaults
              are 0, i.e. published == realized.
 

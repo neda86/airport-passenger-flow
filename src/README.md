@@ -12,7 +12,6 @@ All scripts read the terminal layout from the `AIRPORT_LAYOUT` environment varia
 | `baseline_chronos.py`, `baseline_chronos2.py` | Chronos-Bolt and Chronos-2 zero-shot baselines, with or without the covariates |
 | `finetune_chronos2.py` | Chronos-2 LoRA fine-tuning |
 | `eval_sensitivity.py` | trains once on the baseline tensors and evaluates the same models on the modified datasets |
-| `eval_shift.py` | earlier train-on-one / test-on-another evaluation for two tensor files |
 | `staffing_eval.py` | turns checkpoint forecasts into equivalent screening-lane requirements and scores them |
 | `bootstrap_ci.py` | bootstrap intervals over test days, including paired differences against a reference model |
 | `analysis_macro.py`, `summarize_results.py`, `aggregate_seeds.py`, `sensitivity_summary.py` | pool the results files over seeds and print tables |

@@ -2,9 +2,9 @@
 
 For each model in each *_results*.json it prints
     overall RMSE | process-node (checkpoints) RMSE | gate RMSE | MACRO RMSE
-where MACRO = (process-node RMSE + gate RMSE) / 2, the equal-weighted metric
-that stops the 24 near-deterministic gate nodes from dominating the pooled
-"overall" number (8 of 32 nodes are process nodes).
+where MACRO = (process-node RMSE + gate RMSE) / 2. The pooled "overall"
+number is dominated by the 24 gate nodes (8 of the 32 nodes are process
+nodes); the macro metric weights the two node groups equally.
 
 Seeds are pooled automatically: files that differ only by the _seedN suffix
 are averaged and reported as mean +- sd (n seeds).

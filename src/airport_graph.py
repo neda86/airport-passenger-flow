@@ -1,15 +1,13 @@
-"""Canonical airport graph — layout dispatcher.
+"""Terminal layout dispatcher: node names, node order and adjacency.
 
-This remains the SINGLE import point for node names, node order, and the
-adjacency matrix (the node-ordering fix). The concrete layout is selected
+Every script imports the graph from here, so the node order of the tensors
+and the row order of the adjacency matrix always agree. The layout is chosen
 with the AIRPORT_LAYOUT environment variable:
 
-    AIRPORT_LAYOUT=linear   (default) 4 process nodes + 20 gates   -> airport_graph_linear
-    AIRPORT_LAYOUT=mco      MCO-inspired: 2 checkpoints, APM,
-                            4 airsides + 24 gates (32 nodes)       -> airport_graph_mco
-
-Every script (build_features, train_models, baselines, plots) imports from
-here, so switching layouts never requires touching them:
+    AIRPORT_LAYOUT=mco      MCO-inspired terminal: two checkpoints, APM,
+                            four airside concourses, 24 gates (32 nodes)  -> airport_graph_mco
+    AIRPORT_LAYOUT=linear   (default) linear terminal: 4 process nodes
+                            and 20 gates (24 nodes)                       -> airport_graph_linear
 
     AIRPORT_LAYOUT=mco python build_features.py ...
     AIRPORT_LAYOUT=mco python train_models.py ...
@@ -30,17 +28,8 @@ elif LAYOUT == "linear":
                                       GATES, NUM_GATES, SCHED_DEP_NODES, GATE_HUB,
                                       LAYOUT_NAME, build_graph, adjacency,
                                       normalized_adjacency, node_flow_events)
-elif LAYOUT == "real":
-    # real airport: checkpoint graph written by real_airport.py into REAL_LAYOUT_DIR
-    import sys
-    sys.path.insert(0, os.environ.get("REAL_LAYOUT_DIR", "."))
-    from airport_graph_real import *         # noqa: F401,F403
-    from airport_graph_real import (NODES, NODE_INDEX, NUM_NODES, CHECKPOINTS,
-                                    GATES, NUM_GATES, SCHED_DEP_NODES, GATE_HUB,
-                                    LAYOUT_NAME, build_graph, adjacency,
-                                    normalized_adjacency, node_flow_events)
 else:
-    raise ValueError(f"Unknown AIRPORT_LAYOUT={LAYOUT!r}; use 'linear', 'mco' or 'real'")
+    raise ValueError(f"Unknown AIRPORT_LAYOUT={LAYOUT!r}; use 'mco' or 'linear'")
 
 
 if __name__ == "__main__":

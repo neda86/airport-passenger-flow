@@ -1,4 +1,4 @@
-"""Method figure for the AIAA paper: the factorial model family and the TDN encoder.
+"""Method figure for the paper: the factorial model family and the TDN encoder.
 Vector PDF, Times-like font, sized for a full text width (6.5 in).
     python make_framework_fig.py --out figures
 """

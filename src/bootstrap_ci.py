@@ -6,8 +6,9 @@ recomputed for each resample, so the interval reflects day-to-day variability
 of the test period rather than the seed. Reported for the pooled ("overall"),
 process-node and gate scopes and for the macro metric
 (process + gate) / 2. With --ref MODEL, paired differences MODEL_i - REF on
-the same resampled days are also reported (a CI excluding 0 means the two
-models differ at the 95% level on this test period).
+the same resampled days are also reported; a paired interval that excludes 0
+indicates a difference between the two models under this day-level
+resampling of the test period.
 
 Usage:
     AIRPORT_LAYOUT=mco python bootstrap_ci.py data/tensors_mco_1h_h3_preds.npz \

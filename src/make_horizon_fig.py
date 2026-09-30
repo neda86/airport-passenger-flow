@@ -1,4 +1,4 @@
-"""Horizon-sweep figure for the AIAA paper from a small JSON of numbers
+"""Horizon-sweep figure for the paper from a small JSON of numbers
 ({model: {horizon: [overall, process, gates]}}), produced by summarize_results.py output.
     python make_horizon_fig.py --numbers horizon_numbers.json --out figures
 """

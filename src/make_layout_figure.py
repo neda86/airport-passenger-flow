@@ -11,8 +11,12 @@ Panel C: how the passenger event log becomes the learning tensors (bins, feature
 
 Output: figures/mco_layout_dataset.{pdf,png} (full-page) and
         figures/mco_layout.{pdf,png} (panel A alone, column width).
-All numbers are read from generate_mco.py / airport_graph_mco.py, so the figure
-cannot drift from the code.
+Model parameters (capacities, service times, routing probabilities, the
+schedule and load-factor settings) are read from generate_mco.py and
+airport_graph_mco.py. The dataset statistics quoted in panels B and C (flight
+and passenger counts, dropped flights, queue-wait percentiles) describe the
+seed-42 baseline run and are set in BASELINE_STATS below; update them if the
+dataset is regenerated with other parameters.
 """
 import os
 import sys
@@ -37,6 +41,17 @@ plt.rcParams.update({
 })
 
 FS = [1.0]                      # font scale for panel A (set per figure)
+
+# Statistics of the 90-day, seed-42 baseline dataset (generate_mco.py defaults).
+BASELINE_STATS = dict(
+    flights=9058,             # flights written to flights.csv
+    flights_dropped=2,        # flights dropped because no gate was free
+    passengers=1224917,       # rows in passengers.csv
+    checkin_wait_p95_min=21,  # 95th percentile of the check-in wait
+    security_wait_p95_min=4,  # 95th percentile of the security wait
+)
+_B = BASELINE_STATS
+_LF_MEAN = G.LOAD_FACTOR_BETA[0] / (G.LOAD_FACTOR_BETA[0] + G.LOAD_FACTOR_BETA[1])
 
 
 def sz(x):
@@ -196,18 +211,20 @@ def panel_generation(ax):
                     f"{', '.join(f'{m:.2f}' for m in G.DOW_MULT)}; season ±8 % sinusoid over the 90 days; "
                     f"{G.INTL_FRAC:.0%} international."),
         ("Aircraft", f"seat classes {fmt(G.SEAT_CLASSES)} with p = {fmt(G.SEAT_P_DOM)} (dom) / "
-                     f"{fmt(G.SEAT_P_INTL)} (intl); load factor ~ Beta{G.LOAD_FACTOR_BETA} (mean 0.83), "
+                     f"{fmt(G.SEAT_P_INTL)} (intl); load factor ~ Beta{G.LOAD_FACTOR_BETA} (mean {_LF_MEAN:.2f}), "
                      "clipped to [0.5, 1]; passengers = seats × load factor."),
         ("Gates", "assigned by airline-group affinity to an airside (75 %) subject to turnaround "
-                  "occupancy; a flight with no free gate is dropped (2 of 9,060)."),
+                  f"occupancy; a flight with no free gate is dropped "
+                  f"({_B['flights_dropped']} of {_B['flights'] + _B['flights_dropped']:,})."),
         ("Passengers", f"bag / no bag, kiosk / desk, PreCheck ({G.PRECHECK_P['dom']:.0%} dom, "
                        f"{G.PRECHECK_P['intl']:.0%} intl), checkpoint choice by airside affinity; "
                        "every service point is a FCFS multi-server queue with log-normal service, so "
-                       "waits respond non-linearly to load (check-in p95 21 min, security p95 4 min)."),
+                       f"waits respond non-linearly to load (check-in p95 {_B['checkin_wait_p95_min']} min, "
+                       f"security p95 {_B['security_wait_p95_min']} min)."),
         ("Disruption", "optional realised schedule: --delay-frac (log-normal delay, mean 45 min, "
                        "[10, 240]) and --gate-change-frac (new gate in the same airside). Show-up follows "
                        "the PUBLISHED time, boarding the REALISED one; both are written to flights.csv."),
-        ("Output", "90 days, seed 42: 9,058 flights, 1,224,917 passengers. passengers.csv holds one "
+        ("Output", f"90 days, seed 42: {_B['flights']:,} flights, {_B['passengers']:,} passengers. passengers.csv holds one "
                    "timestamp per process (arrival, check-in start/end, security queue start/end, "
                    "airside arrival, boarding); flights.csv holds published and realised times and gates."),
     ]
@@ -219,7 +236,7 @@ def panel_tensors(ax):
     ax.text(0, 99, "C.  From the event log to the learning tensors (build_features.py)",
             fontsize=9.5, fontweight="bold", va="top")
     steps = [
-        ("passengers.csv\n1.22 M rows", C_LAND),
+        (f"passengers.csv\n{_B['passengers'] / 1e6:.2f} M rows", C_LAND),
         ("node events\n(in / out per node)", C_LAND),
         ("regular bin grid\n1 h  or  15 min", C_SEC),
         ("X: history window\nY: future flows\nS: future schedule", C_AIR),

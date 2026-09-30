@@ -1,22 +1,20 @@
-"""LoRA fine-tuning of Chronos-2 on the airport dataset ("rung 3" baseline).
+"""LoRA fine-tuning of Chronos-2 on the terminal tensors.
 
-Fairness ladder this completes:
-  1. Chronos-Bolt   zero-shot, no covariates      (baseline_chronos.py)
-  2. Chronos-2      zero-shot, schedule covariates (baseline_chronos2.py)
-  3. Chronos-2+LoRA fine-tuned, schedule covariates  <-- THIS SCRIPT
-  4. GCN-LSTM+Sched supervised                     (train_models.py)
+The model is fine-tuned on the chronological 70% training split used by the
+supervised models, validated on the same 15% and evaluated on the same 15%
+test windows, with or without the known-future schedule covariates
+(--no-covariates). Together with baseline_chronos.py (Chronos-Bolt, univariate
+zero-shot) and baseline_chronos2.py (Chronos-2 zero-shot) this gives the
+foundation-model rows of the paper.
 
-Rung 3 vs 4 isolates ARCHITECTURE: both are trained on the same chronological
-70% train split, validated on the same 15%, tested on the same 15% windows,
-and both receive the same schedule covariates.
+Uses Chronos2Pipeline.fit() from chronos-forecasting >= 2.0: LoRA on the
+attention projections and the output head, learning rate 1e-5, and
+best-checkpoint selection on the validation loss.
 
-Uses Chronos2Pipeline.fit() (built into chronos-forecasting >= 2.0):
-LoRA mode targets the attention projections + output head; recommended
-lr 1e-5; validation_inputs enables best-checkpoint selection on eval_loss.
+A GPU is strongly recommended (a Colab T4 is enough); the CPU is fine for
+--probe only.
 
-GPU strongly recommended (Colab T4 is fine). CPU works for --probe only.
-
-Usage (Colab):
+Usage:
   pip install "chronos-forecasting>=2.0" peft
   python finetune_chronos2.py --data tensors_1h_h3.npz            # full run
   python finetune_chronos2.py --data tensors_1h_h3.npz --probe    # 5-step smoke test

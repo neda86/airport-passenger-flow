@@ -11,14 +11,15 @@ Conventions:
   4. Calendar features are cyclical encodings of hour and day of week plus a
      workday flag; no feature is computed from full-dataset statistics.
 
-Schedule conditioning: if --flights is given, two KNOWN-FUTURE covariates are
-built from the published flight schedule (both are known hours in advance in
-real operations, so using them over the forecast horizon is NOT leakage):
+Schedule conditioning: if --flights is given, two known-future covariates are
+built from the flight schedule (both are known hours in advance in real
+operations, so using them over the forecast horizon does not reveal the
+target):
   sched_board — expected passengers boarding at the node in the bin
                 (per gate; Boarding node = sum over gates)
   sched_dep   — passengers on flights departing 1-3.5h after the bin
                 (landside "pressure" heading for check-in/security)
-They are appended to the history features AND exported as a future tensor
+They are appended to the history features and exported as a future tensor
 S (samples, nodes, 2, tar_seq) aligned with the forecast horizon.
 
 Usage: build_features.py --freq 15min|1h --in-seq 12 --tar-seq 12
@@ -56,7 +57,7 @@ def _with_columns(fl: pd.DataFrame, use: dict, pax: str = "realized") -> pd.Data
     pax='expected': what an operator knows in advance: seats x the mean load
                     factor (MCO data) or the mean flight size (linear data),
                     with a weekend uplift where the generator has one. The exact
-                    load of each flight is NOT revealed to the model."""
+                    load of each flight is not revealed to the model."""
     out = fl.drop(columns=list(use.values())).rename(columns=use).copy()
     for c in ["Boarding Start", "Boarding End", "Departure"]:
         out[c] = pd.to_datetime(out[c])
@@ -123,8 +124,8 @@ def schedule_features(flights_csv: str, bins: pd.DatetimeIndex, freq: str,
     schedule='mixed'     -> each covariate from the schedule that governs the
                             physical process it describes: passengers show up
                             (landside pressure, airside/hub arrivals) relative to
-                            the PUBLISHED departure, whereas boarding at a GATE
-                            follows the REALIZED gate and time. = the operational
+                            the published departure, whereas boarding at a gate
+                            follows the realized gate and time: the operational
                             upper bound if delays/gate changes are announced in time.
     """
     fl = pd.read_csv(flights_csv)

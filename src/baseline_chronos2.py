@@ -1,11 +1,10 @@
-"""Chronos-2 covariate-informed zero-shot baseline.
+"""Chronos-2 zero-shot baseline with optional schedule covariates.
 
-Chronos-2 (arXiv:2510.15821) supports known-future covariates natively, so —
-unlike the univariate Chronos-Bolt baseline — it receives EXACTLY the same
-schedule information as the +Sched neural models: sched_board and sched_dep,
-past values as past_covariates and the forecast-horizon values as
-future_covariates. Same test split, same metrics. This answers the
-"you handicapped the foundation model" objection directly.
+Chronos-2 supports known-future covariates natively. In the covariate-informed
+configuration it receives the same sched_board and sched_dep variables as the
+schedule-conditioned supervised models: past values as past_covariates and the
+forecast-horizon values as future_covariates. Evaluation uses the same
+chronological test split and the same metrics as train_models.py.
 
 Usage: baseline_chronos2.py --data tensors_1h_h3.npz [--context 512]
 """
