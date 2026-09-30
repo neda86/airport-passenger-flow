@@ -10,7 +10,6 @@ The question behind the paper is simple: how much of the terminal forecasting pr
 src/        simulator, feature construction, models, baselines, analysis, figures
 scripts/    reproduce.sh, the experiment sequence of the paper in one file
 data/       generated data goes here (not tracked, see data/README.md)
-notebooks/  the early exploratory passenger generator
 ```
 
 Everything in `src/` is a plain Python script with a command-line interface; there is no package to install. Run the scripts from inside `src/` or put `src/` on `PYTHONPATH`.
